@@ -398,7 +398,9 @@ internal class OperationsQueueManager : IOperationsQueueManager
         {
             _ = response.ContentStream.Seek(0L, SeekOrigin.Begin); // Reset the memory stream to the beginning.
             object? newValue = JsonSerializer.Deserialize(response.ContentStream, entityType, DatasyncSerializer.JsonSerializerOptions);
-            object? oldValue = await this._context.FindAsync(entityType, [operation.ItemId], cancellationToken).ConfigureAwait(false);
+
+            object? oldValue = await GetOldValue(operation, cancellationToken, entityType);
+
             ReplaceDatabaseValue(oldValue, newValue);
         }
 
@@ -408,6 +410,29 @@ internal class OperationsQueueManager : IOperationsQueueManager
         }
 
         return null;
+    }
+
+    private async Task<object?> GetOldValue(DatasyncOperation operation, CancellationToken cancellationToken, Type entityType)
+    {
+        // When using parallel operations together with calling PushAsync in series,
+        // two or more threads try to access the same context at the same time
+        // which leads to a thrown exception.
+        // This can be prevented by "locking" this specific FindAsync query.
+        this.pushlock.Enter();
+
+        try
+        {
+            object? oldValue =
+                await this._context
+                    .FindAsync(entityType, [operation.ItemId], cancellationToken)
+                    .ConfigureAwait(false);
+
+            return oldValue;
+        }
+        finally
+        {
+            this.pushlock.Exit();
+        }
     }
 
     /// <summary>
